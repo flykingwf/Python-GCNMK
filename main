@@ -1,0 +1,494 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jun 27 11:13:15 2021
+
+@author: flyki
+"""
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jun 13 14:21:33 2021
+
+@author: flyki
+"""
+
+import os
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0" # 0 for GPU
+import os.path as osp
+import sys
+import time
+import random
+import joblib
+import argparse
+import torch
+import pandas as pd
+import numpy as np
+from numpy import genfromtxt
+import matplotlib.pyplot as plt
+from sklearn import preprocessing
+import sklearn.metrics as metrics
+from sklearn.metrics import roc_auc_score,average_precision_score, roc_curve, auc, precision_recall_curve, f1_score
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.cluster import normalized_mutual_info_score
+from sklearn.metrics.cluster import adjusted_rand_score
+import torch_geometric.transforms as Trans
+from torch_geometric.nn import GCNConv, GAE, VGAE
+from torch_geometric.utils import train_test_split_edges
+import torch.nn.functional as F
+import torch.nn as nn
+import math
+from torch.nn.parameter import Parameter
+from torch.nn.modules.module import Module
+min_max_scaler = preprocessing.MinMaxScaler()
+device = torch.device('cuda')
+loss_fct = torch.nn.BCELoss()
+Sigm = torch.nn.Sigmoid()
+
+'''
+####################################################     increased and decreased DDIs
+'''
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\adjacentDDI_Increase.csv',delimiter=',')
+adjacentDD = my_data.astype('int')
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\adjacentDDI_Decrease.csv',delimiter=',')
+adjacentDD_decrease = my_data.astype('int')
+nD = adjacentDD.shape[0]
+DDlist = list()
+for i in range(0,adjacentDD.shape[0]-1):
+    for j in range(i+1,adjacentDD.shape[0]):
+        if(adjacentDD[i,j]>0):
+            DDlist.append([i,j])
+print(len(DDlist))
+random.shuffle(DDlist)
+
+NonDDlist = list()
+for i in range(0,adjacentDD_decrease.shape[0]-1):
+    for j in range(i+1,adjacentDD_decrease.shape[0]):
+        if(adjacentDD_decrease[i,j]==1):
+            NonDDlist.append([i,j])
+print(len(NonDDlist))
+random.shuffle(NonDDlist)
+
+
+'''
+####################################################     features
+'''
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\drug_881fingerprint.csv',delimiter=',')
+drug_feature_fingerprint = my_data.astype('int')
+nF = drug_feature_fingerprint.shape[1]
+
+'''
+####################################################     model
+'''
+
+Hdim1 = 256
+d = 64
+Hdim3 = 32
+Hdim4 = 16
+drop = 0.2
+class GraphConvolution(Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super(GraphConvolution, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Parameter(torch.FloatTensor(in_features, out_features))
+        if bias:
+            self.bias = Parameter(torch.FloatTensor(out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
+
+    def forward(self, input, adj):
+        support = torch.mm(input, self.weight)
+        output = torch.spmm(adj, support)
+        if self.bias is not None:
+            return output + self.bias
+        else:
+            return output
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' \
+               + str(self.in_features) + ' -> ' \
+               + str(self.out_features) + ')'
+
+def reset_parameters(w):
+    stdv = 1. / math.sqrt(w.size(0))
+    w.data.uniform_(-stdv, stdv)
+
+class IDGCN(nn.Module):
+    def __init__(self, nfeat, nhid1, nhid2, nhid_decode1, nhid_decode2, dropout):
+        super(IDGCN, self).__init__()
+        
+        # original graph
+        self.o_gc1 = GraphConvolution(nfeat, nhid1)
+        self.o_gc2 = GraphConvolution(nhid1, nhid2)
+        
+        # original graph for skip update
+        self.o_gc1_s = GraphConvolution(nhid1, nhid1)
+        
+        #skip graph
+        self.s_gc1 = GraphConvolution(nfeat, nhid1)
+        
+        #skip graph for original update
+        self.s_gc1_o = GraphConvolution(nfeat, nhid1)
+        self.s_gc2_o = GraphConvolution(nhid1, nhid2)
+       
+        self.dropout = dropout
+        
+        self.decoder1 = nn.Linear(nhid2 * 2, nhid_decode1)
+        self.decoder2 = nn.Linear(nhid_decode1, nhid_decode2)
+        self.decoder3 = nn.Linear(nhid_decode2, 1)
+        
+    def reparametrize(self, mu, logstd):
+        if self.training:
+            return mu + torch.randn_like(logstd) * torch.exp(logstd)
+        else:
+            return mu
+
+    def forward(self, x, o_adj, s_adj, idx):
+        
+        o_x = F.relu(self.o_gc1(x, o_adj) + self.s_gc1_o(x, s_adj))       
+        s_x = F.relu(self.s_gc1(x, s_adj) + self.o_gc1_s(o_x, o_adj))
+        o_x = F.dropout(o_x, self.dropout, training = self.training)
+        s_x = F.dropout(s_x, self.dropout, training = self.training)
+        x = self.o_gc2(o_x, o_adj) + self.s_gc2_o(s_x, s_adj)
+        feat_p1 = x[idx[0]] # the first biomedical entity embedding retrieved
+        feat_p2 = x[idx[1]] # the second biomedical entity embedding retrieved
+        feat = torch.cat((feat_p1, feat_p2), dim = 1)
+        o = F.relu(self.decoder1(feat))
+        o = F.relu(self.decoder2(o))
+        o = torch.sigmoid(self.decoder3(o))
+        return o, x
+
+foldN = 5
+foldrange = int(nddi_pos/foldN)
+sampleT = np.arange(nddi_pos)
+np.random.shuffle(sampleT)
+sampleT = sampleT[0:foldrange*foldN].reshape((foldrange,foldN))
+
+label_test = torch.Tensor(np.concatenate((np.ones([foldrange,]),np.zeros([foldrange,]))))
+label_train = torch.Tensor(np.concatenate((np.ones([foldrange*(foldN-1),]),np.zeros([foldrange*(foldN-1),]))))
+label_train = label_train.to(device)
+label_test = label_test.to(device)
+label_trainCPU = label_train.cpu().numpy()
+label_testCPU = label_test.cpu().numpy()
+
+max_auc = 0
+def test(DDx, adj, adj2, inptest):
+    model.eval()
+    label_test_pred = []
+    output, _ = model(DDx, adj, adj2, inptest)
+    n = torch.squeeze(Sigm(output))
+    loss = loss_fct(n, label_test)
+    label_test_pred = label_test_pred + output.flatten().tolist()
+    outputs = np.asarray([1 if i else 0 for i in (np.asarray(label_test_pred) >= 0.5)])
+    label_test_pred = np.array(label_test_pred)
+    roc = roc_auc_score(label_testCPU, label_test_pred)
+    ap = average_precision_score(label_testCPU, label_test_pred)
+    f1s = f1_score(label_testCPU, outputs)
+    return roc, ap, f1s, loss
+def train(DDx, adj, adj2, inptrain):
+    model.train()
+    optimizer.zero_grad()
+    output, _ = model(DDx, adj, adj2, inptrain)
+    n = torch.squeeze(Sigm(output))
+    loss_train = loss_fct(n, label_train)
+    loss_train.backward()
+    optimizer.step()
+    label_train_pred = output.flatten().tolist()
+    return float(loss_train),label_train_pred
+loss_history = []
+
+adj = torch.Tensor(adjacentDD).type(torch.float)
+adj2 = torch.Tensor(adjacentDD_decrease).type(torch.float)
+
+model_str = ['drug_feature_enzyme','drug_feature_side','drug_feature_pathway','drug_feature_target',
+             'drug_feature_PRL','drug_feature_adjacentDD','drug_feature_fingerprint','drug_feature_node2vec']
+
+DDx = torch.from_numpy(drug_feature_fingerprint).type(torch.float)
+DDx = DDx.to(device)
+dplist=[0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
+
+Hdim1 = 128
+d = 64
+Hdim3 = 32
+Hdim4 = 16
+Nfeature = DDx.shape[1]
+
+for drop in dplist:
+    print('Dropout: ',drop)
+    inter_auc=list()
+    inter_pr = list()
+    for repeat in range(0,5):
+        model = IDGCN(nfeat=Nfeature,nhid1=Hdim1,nhid2=d,nhid_decode1 = Hdim3,nhid_decode2=Hdim4,dropout=drop)
+        optimizer = torch.optim.Adam(model.parameters(),lr=0.001, weight_decay=0.0005)
+        model = model.to(device)
+        model.eval()
+        for T in range(0,foldN):
+            max_auc = 0.01
+            max_loss = 30000
+            EpochSize = 400
+            zpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\z_'+str(drop)+'_drug_feature_target_Repeat'+str(repeat)+'_'+str(T)+'.csv'
+            modelpath = 'D:\\StudyTools\\GraphModels\\temp1\\modelall'+str(T)+'.pth'
+            adpathP = 'D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\AdjacentNet_Pos_'+str(T)+'.csv'
+            adpathN = 'D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\AdjacentNet_Neg_'+str(T)+'.csv'
+            my_data = genfromtxt(adpathP,delimiter=',')
+            my_data = my_data.astype('int')
+            adj = torch.Tensor(my_data).type(torch.float)
+            adj = adj.to(device)
+            #DDx = torch.Tensor(my_data).type(torch.float)
+            #DDx = DDx.to(device)
+            my_data = genfromtxt(adpathN,delimiter=',')
+            my_data = my_data.astype('int')
+            adj2 = torch.Tensor(my_data).type(torch.float)
+            adj2 = adj2.to(device)
+        
+            sampleN_test = sampleT[:,T]
+            sampleN_test = sampleN_test.reshape((1,foldrange))
+            sampleN_test = sampleN_test[0]
+            sampleN_train = np.delete(sampleT,T,axis=1)
+            sampleN_train = sampleN_train.reshape((1,foldrange*(foldN-1)))
+            sampleN_train = sampleN_train[0]
+    
+            inptrain=[0,1]
+            inptrain[0] = np.concatenate((ddiedgeP[sampleN_train,0],ddiedgeN[sampleN_train,0]))
+            inptrain[1] = np.concatenate((ddiedgeP[sampleN_train,1],ddiedgeN[sampleN_train,1]))
+            inptrain = torch.Tensor(inptrain).type(torch.LongTensor)
+            inptrain = inptrain.to(device)
+            inptest = [0,1]
+            inptest[0] = np.concatenate((ddiedgeP[sampleN_test,0],ddiedgeN[sampleN_test,0]))
+            inptest[1] = np.concatenate((ddiedgeP[sampleN_test,1],ddiedgeN[sampleN_test,1]))
+            inptest = torch.Tensor(inptest).type(torch.LongTensor)
+            inptest = inptest.to(device)
+    
+            loss_train_history = np.ones([EpochSize,])*100
+            loss_test_history = np.ones([EpochSize,])*100
+            xaxis = np.arange(0,EpochSize,1)
+            roc_train = np.zeros([EpochSize,])
+            roc_test = np.zeros([EpochSize,])
+            for epoch in range(0,EpochSize):
+                loss_train,label_train_pred = train(DDx, adj, adj2, inptrain)
+                label_train_pred = torch.Tensor(label_train_pred)
+                loss_train_history[epoch]=loss_train
+                label_train_predCPU = label_train_pred.cpu().numpy()
+                roc_train[epoch] = roc_auc_score(label_trainCPU, label_train_predCPU)
+                roc_val, prc_val, f1_val, loss_val = test(DDx, adj, adj2, inptest)
+                loss_test_history[epoch] = loss_val
+                roc_test[epoch]=roc_val
+        #if(roc_val>max_auc):
+                if(loss_val<max_loss):
+                    max_loss = loss_val
+                    max_auc = roc_val
+                    torch.save(model.state_dict(),modelpath)
+            #print("Save model at {:03d}th epoch, LossTrain: {:.5f}, LossTest: {:.5f}, RocTest: {:.5f}".format(epoch+1, loss_train, loss_val, roc_val))
+        #print('Epoch: {:03d}, LossTrain: {:.5f}, LossTest: {:.5f}, RocTest: {:.5f}'.format(epoch+1, loss_train, loss_val, roc_val))
+            print('T=',T)
+            model_loaded = model.load_state_dict(torch.load(modelpath))
+            output, codelayer = model(DDx, adj, adj2, inptest)
+            zz=codelayer.detach().to('cpu').numpy()
+            np.savetxt(zpath,zz,delimiter=",")
+            if(T==0):
+                label_p = output
+            else:
+                label_p = torch.cat((label_p,output),0)
+        label_test = torch.Tensor(np.concatenate((np.ones([foldrange,]),np.zeros([foldrange,]))))
+        label_test = label_test.to(device)
+        label_t = torch.cat((label_test,label_test,label_test,label_test,label_test))
+        label_t = label_t.cpu().numpy().tolist()
+        label_p = label_p.cpu().detach().numpy()
+        label_p = label_p.reshape(len(label_t),)
+        label_p = list(label_p)
+        print('Repeat No.: ',repeat+1)
+#from sklearn.metrics import roc_auc_score,average_precision_score, roc_curve, auc, precision_recall_curve
+        fpr,tpr,threshold = roc_curve(label_t, label_p, pos_label=1)
+        from sklearn import metrics as sklearnmetrics
+        roc_auc = sklearnmetrics.auc(fpr, tpr)
+        print('AUCROC: ', roc_auc)
+        precision, recall, thresholdPR = precision_recall_curve(label_t, label_p)
+        pr_auc = sklearnmetrics.auc(recall,precision)
+        print('AUCPR', pr_auc)
+        print('##############################')
+        inter_auc.append(roc_auc)
+        inter_pr.append(pr_auc)
+        print('##############################')
+        inter = inter_auc+inter_pr
+    np.savetxt('D:\\StudyTools\\GraphModels\\zzzzz\\drop_target_'+str(drop)+'.csv',np.array(inter),delimiter=",")
+
+'''
+###############################                  #######################################################
+###############################    tfgpu DNN     #######################################################
+###############################                  #######################################################
+One problem is that I can't run my neural network model in the pytorch environment with 0 error, so I run it in tensorflow environment
+'''
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import random
+import joblib
+from sklearn.metrics.cluster import normalized_mutual_info_score
+from sklearn.metrics.cluster import adjusted_rand_score
+import tensorflow as tf
+#import array
+#import pandas as pd
+from sklearn import preprocessing
+#from keras.datasets import mnist
+from keras import regularizers, backend
+from keras.utils import CustomObjectScope
+from keras.models import Model, Sequential, load_model
+from keras.layers import Dense, Input, Dropout, Layer, BatchNormalization, Lambda, Reshape
+#from keras import regularizers
+from numpy import genfromtxt
+from keras.losses import binary_crossentropy
+#from keras.utils import to_categorical
+#from keras.optimizers import SGD
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+
+min_max_scaler = preprocessing.MinMaxScaler()  
+
+
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\adjacentDDI_Increase.csv',delimiter=',')
+adjacentDD_increased = my_data.astype('int')
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\drug_drug\\adjacentDDI_Decrease.csv',delimiter=',')
+adjacentDD_decreased = my_data.astype('int')
+nD = adjacentDD_increased.shape[0]
+DDlist = list()
+for i in range(0,adjacentDD_increased.shape[0]-1):
+    for j in range(i+1,adjacentDD_increased.shape[0]):
+        if(adjacentDD_increased[i,j]>0):
+            DDlist.append([i,j])
+print(len(DDlist))
+random.shuffle(DDlist)
+
+foldN=5
+foldrange = int(len(DDlist)/foldN)
+label_test = np.concatenate((np.ones([foldrange,1]),np.zeros([foldrange,1])))
+
+label_train = np.concatenate((np.ones([foldrange*(foldN-1),1]),np.zeros([foldrange*(foldN-1),1])))
+
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\PosNet_NegNet_ddiedgeN.csv',delimiter=',')
+ddiedgeN = my_data.astype('int')
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\PosNet_NegNet_ddiedgeP.csv',delimiter=',')
+ddiedgeP = my_data.astype('int')
+my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\PosNet_NegNet_sampleT.csv',delimiter=',')
+sampleT = my_data.astype('int')
+DDmat = ddiedgeP
+NonDDmat = ddiedgeN
+
+from matplotlib import rcParams
+from matplotlib.font_manager import FontProperties
+params={'font.family':'serif',
+        'font.serif':'Times New Roman',
+        'font.style':'normal', # oblique italic normal
+        'font.weight':'normal', #or 'blod'
+        'font.size':'16',#or large,small
+        }
+rcParams.update(params)
+model_str = ['drug_feature_enzyme','drug_feature_side','drug_feature_pathway','drug_feature_target',
+             'drug_feature_PRL','drug_feature_adjacentDD','drug_feature_fingerprint','drug_feature_node2vec']
+
+dplist=[0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
+nndim1 = 32
+nndim2 = 16
+EpochSize = 300
+BatchSize = 32
+for drop in dplist:
+    list_auc = list()
+    list_pr = list()
+    print('Dropout: ',drop)
+    for repeat in range(0,5):
+        for repeatRR in range(0,4):
+            for T in range(0,foldN):
+                zpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\z_'+str(drop)+'_drug_feature_target_Repeat'+str(repeat)+'_'+str(T)+'.csv'
+                my_data = genfromtxt(zpath,delimiter=',')
+                z=my_data.astype('float32')
+                nCode = z.shape[1]
+                indim2 = nCode*2
+                sampleN_test = sampleT[:,T]
+                sampleN_test = sampleN_test.reshape((1,foldrange))
+                sampleN_test = sampleN_test[0]
+                sampleN_train = np.delete(sampleT,T,axis=1)
+                sampleN_train = sampleN_train.reshape((1,foldrange*(foldN-1)))
+                sampleN_train = sampleN_train[0]
+    
+                DD_train = DDmat[sampleN_train]
+                DD_test = DDmat[sampleN_test]
+                NonDD_train = NonDDmat[sampleN_train]
+                NonDD_test = NonDDmat[sampleN_test]
+    
+                edge_train1 = np.concatenate((z[DD_train[:,0],:],z[DD_train[:,1],:]),axis=1)
+                edge_train2 = np.concatenate((z[NonDD_train[:,0],:],z[NonDD_train[:,1],:]),axis=1)
+                edge_train = np.concatenate((edge_train1,edge_train2),axis=0)
+                edge_train = min_max_scaler.fit_transform(edge_train.T)
+                edge_train = edge_train.T
+    
+                edge_test1 = np.concatenate((z[DD_test[:,0],:],z[DD_test[:,1],:]),axis=1)
+                edge_test2 = np.concatenate((z[NonDD_test[:,0],:],z[NonDD_test[:,1],:]),axis=1)
+                edge_test = np.concatenate((edge_test1,edge_test2),axis=0)
+                edge_test = min_max_scaler.fit_transform(edge_test.T)
+                edge_test = edge_test.T
+    
+                checkpoint_filepath1 = 'D:\\StudyTools\\TMPmodels\\testmodel2.h5'
+                earlysave = ModelCheckpoint(checkpoint_filepath1, monitor='val_loss', save_best_only=True, mode='min')
+                backend.clear_session()
+                nnmodel = Sequential()
+                #nnmodel.add(Input(shape=(978,)))
+                nnmodel.add(Dense(nndim1, input_dim=indim2, activation='relu'))
+                nnmodel.add(Dropout(drop,noise_shape=None, seed=None))
+                nnmodel.add(Dense(nndim2, activation='relu'))
+                #nnmodel.add(Dense(Hdim4, activation='relu'))
+                nnmodel.add(Dense(1, activation='sigmoid'))
+                nnmodel.compile(optimizer='Adadelta', loss='binary_crossentropy')
+    
+                history = nnmodel.fit(edge_train, 
+                                      label_train, 
+                                      validation_data=(edge_test, label_test), 
+                                      epochs=EpochSize,
+                                      batch_size=BatchSize, 
+                                      callbacks=[earlysave])
+                nnmodel.load_weights(checkpoint_filepath1)
+                result1 = nnmodel.predict(edge_test)
+                result2 = np.asarray([1 if i else 0 for i in (np.asarray(result1) >= 0.5)])
+                result3 = result1.reshape((418,))
+                if(T==0):
+                    label_true = np.concatenate((np.ones([foldrange,]),np.zeros([foldrange,])))
+                    label_pred = result2
+                    label_value = result3
+                else:
+                    label_true = np.concatenate((label_true,np.concatenate((np.ones([foldrange,]),np.zeros([foldrange,])))))
+                    label_pred = np.concatenate((label_pred,result2))
+                    label_value = np.concatenate((label_value,result3))
+            from sklearn.metrics import roc_auc_score,average_precision_score, roc_curve, auc, precision_recall_curve
+            fpr,tpr,threshold = roc_curve(label_true, label_value, pos_label=1)
+            from sklearn import metrics
+            roc_auc = metrics.auc(fpr, tpr)
+            precision, recall, thresholdPR = precision_recall_curve(label_true, label_value)
+            pr_auc = metrics.auc(recall,precision)
+            print('Repeat No.: ',repeat+1)
+            print('RepeatRR No.: ',repeatRR+1)
+            list_auc.append(roc_auc)
+            list_pr.append(pr_auc)
+            print('AUCROC: ', roc_auc)
+            print('AUCPR', pr_auc)
+            print('################################')
+            markT = np.zeros([len(thresholdPR),1])
+            for i in range(0,len(thresholdPR)):
+                resultT = np.asarray([1 if i else 0 for i in (np.asarray(label_value) >= thresholdPR[i])])
+                markT[i]=sum(resultT==label_true)
+            markT = markT.tolist()
+            max_index = markT.index(max(markT))
+            label_pred2 = np.asarray([1 if i else 0 for i in (np.asarray(label_value) >=thresholdPR[max_index])])
+            zpath2 = 'D:\\StudyTools\\GraphModels\\zzzzz_pred\\predicted_'+str(drop)+'_target_Repeat'+str(repeat)+'_'+str(repeatRR)+'.csv'
+            np.savetxt(zpath2,label_pred2,delimiter=",")
+            #print(list_auc)
+        print('################################')
+    print('################################')
+    predlist = list_auc+list_pr
+    np.savetxt('D:\\StudyTools\\GraphModels\\zzzzz\\IDGCN_drop_target_'+str(drop)+'_e.csv',np.array(predlist),delimiter=",")
+
+
+
