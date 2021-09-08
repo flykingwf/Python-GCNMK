@@ -204,20 +204,20 @@ class IDGCN(nn.Module):
     def __init__(self, nfeat, nhid1, nhid2, nhid_decode1, nhid_decode2, dropout):
         super(IDGCN, self).__init__()
         
-        # original graph
-        self.o_gc1 = GraphConvolution(nfeat, nhid1)
-        self.o_gc2 = GraphConvolution(nhid1, nhid2)
+        # Increase
+        self.i_gc1 = GraphConvolution(nfeat, nhid1)
+        self.i_gc2 = GraphConvolution(nhid1, nhid2)
         
-        # original graph for skip update
-        self.o_gc1_s = GraphConvolution(nhid1, nhid1)
+        # Increase to Decrease
+        self.i_gc1_d = GraphConvolution(nfeat, nhid1)
+
+        #Decrease
+        self.d_gc1 = GraphConvolution(nfeat, nhid1)
+        self.d_gc2 = GraphConvolution(nhid1, nhid2)
         
-        #skip graph
-        self.s_gc1 = GraphConvolution(nfeat, nhid1)
-        
-        #skip graph for original update
-        self.s_gc1_o = GraphConvolution(nfeat, nhid1)
-        self.s_gc2_o = GraphConvolution(nhid1, nhid2)
-       
+        #Decrease to Increase
+        self.d_gc1_i = GraphConvolution(nfeat, nhid1)
+               
         self.dropout = dropout
         
         self.decoder1 = nn.Linear(nhid2 * 2, nhid_decode1)
@@ -230,17 +230,15 @@ class IDGCN(nn.Module):
         else:
             return mu
 
-    def forward(self, x, o_adj, s_adj, idx):
+    def forward(self, x, i_adj, d_adj, idx):
         
-        o_x = F.relu(self.o_gc1(x, o_adj) + self.s_gc1_o(x, s_adj))       
-        s_x = F.relu(self.s_gc1(x, s_adj) + self.o_gc1_s(o_x, o_adj))
-        o_x = F.dropout(o_x, self.dropout, training = self.training)
-        s_x = F.dropout(s_x, self.dropout, training = self.training)
-        x = F.relu(self.o_gc2(o_x, o_adj) + self.s_gc2_o(s_x, s_adj))
+        i_x = F.relu(self.i_gc1(x, i_adj) + self.d_gc1_i(x, d_adj))       
+        d_x = F.relu(self.d_gc1(x, d_adj) + self.i_gc1_d(x, i_adj))
         
-        #o_x = F.relu(self.o_gc1(x, o_adj))
-        #o_x = F.dropout(o_x, self.dropout, training = self.training)
-        #x = self.o_gc2(o_x, o_adj)
+        i_x = F.dropout(i_x, self.dropout, training = self.training)
+        d_x = F.dropout(d_x, self.dropout, training = self.training)
+        
+        x = F.relu(self.i_gc2(i_x, i_adj) + self.d_gc2(d_x, d_adj))
         
         #x = self.reparametrize(self.conv_mu(x, o_adj), self.conv_logstd(x, o_adj))
         feat_p1 = x[idx[0]] # the first biomedical entity embedding retrieved
