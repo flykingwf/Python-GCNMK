@@ -7,6 +7,7 @@ import random
 import joblib
 import argparse
 import torch
+import pandas as pd
 import numpy as np
 from numpy import genfromtxt
 import matplotlib.pyplot as plt
@@ -246,10 +247,10 @@ class IDGCN(nn.Module):
         feat = torch.cat((feat_p1, feat_p2), dim = 1)
         o = F.relu(self.decoder1(feat))
         o = F.dropout(o,self.dropout)
-        o = F.relu(self.decoder2(o))
+        oo = F.relu(self.decoder2(o))
         #o = F.dropout(o,self.dropout)
-        o = torch.sigmoid(self.decoder3(o))
-        return o, x
+        o = torch.sigmoid(self.decoder3(oo))
+        return o, x, oo
 '''
 model = IDGCN(nfeat=Nfeature,nhid1=Hdim1,nhid2=d,nhid_decode1 = Hdim3,nhid_decode2=Hdim4, dropout=drop)
 optimizer = torch.optim.Adam(model.parameters(),lr=0.001, weight_decay=0.0005)
@@ -278,7 +279,7 @@ max_auc = 0
 def test(DDx, adj, adj2, inptest):
     model.eval()
     label_test_pred = []
-    output, _ = model(DDx, adj, adj2, inptest)
+    output, _, _ = model(DDx, adj, adj2, inptest)
     n = torch.squeeze(Sigm(output))
     loss = loss_fct(n, label_test)
     label_test_pred = label_test_pred + output.flatten().tolist()
@@ -291,7 +292,7 @@ def test(DDx, adj, adj2, inptest):
 def train(DDx, adj, adj2, inptrain):
     model.train()
     optimizer.zero_grad()
-    output, _ = model(DDx, adj, adj2, inptrain)
+    output, _, _ = model(DDx, adj, adj2, inptrain)
     n = torch.squeeze(Sigm(output))
     loss_train = loss_fct(n, label_train)
     loss_train.backward()
@@ -332,8 +333,7 @@ my_data = genfromtxt('D:\\Datasets\\DDI_DTI_datasets\\PosNet_NegNet_sampleT.csv'
 sampleT = my_data.astype('int')
 '''
 
-model_str = ['drug_feature_target','drug_feature_enzyme','drug_feature_pathway','drug_feature_side','adjacentDD_decrease','drug_feature_fingerprint','node2vec_representation','drug_feature_PRL']
-model_file_str = ['target','enzyme','pathway','side','adjacentDD','fingerprint','node2vec','PRL']
+
 '''
 DDx = torch.from_numpy(drug_feature_enzyme).type(torch.float)
 DDx = DDx.to(device)
@@ -364,18 +364,21 @@ DDx = DDx.to(device)
 Hdim1 = 128#128
 Hdim3 = 32
 Hdim4 = 16
-dims = [192,224,256]
+dims = [224,256,288,320]
 dplist=[0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-learningrate = [9e-3,8e-3,7e-3,6e-3,5e-3,4e-3,3e-3,2e-3]
-
-weights = [8e-5,7e-5,6e-5,5e-5,4e-5,3e-5,2e-5,1e-6]
-
+#learningrate = [0.1,0.01,0.001,0.0001,0.00001,0.000001]
+learningrate = [5e-3,4e-3,3e-3,2e-3,1e-3,9e-4,8e-4,7e-4,6e-4,5e-4,4e-4,3e-4,2e-4,6e-3,7e-3,8e-3,9e-3]
+weights = [1e-6,1e-5,2e-5,3e-5]
+#weights = [0.1,0.01,0.001,0.0001,0.00001,0.000001]
+dims = [160]
+model_str = ['drug_feature_target','drug_feature_enzyme','drug_feature_pathway','drug_feature_side','adjacentDD_decrease','drug_feature_fingerprint','node2vec_representation','drug_feature_PRL']
+model_file_str = ['target','enzyme','pathway','side','adjacentDD','fingerprint','node2vec','PRL']
 drop = 0
-d = 288
+d = 160
 lrate = 0.002
 mstr=0
-lamda = 0.0002
-for RRRRR in range(0,1):
+lamda = 0.0003
+for d in dims:
     DDx = torch.from_numpy(eval(model_str[mstr])).type(torch.float)
     DDx = DDx.to(device)
     Nfeature = DDx.shape[1]
@@ -388,22 +391,29 @@ for RRRRR in range(0,1):
     inter_pr = list()
     inter_auc.append(0)
     inter_pr.append(0)
-    for repeat in range(0,5):
+    for repeat in range(0,1):
         JK=0.5
         model = IDGCN(nfeat=Nfeature,nhid1=Hdim1,nhid2=d,nhid_decode1 = Hdim3,nhid_decode2=Hdim4,dropout=drop)
         optimizer = torch.optim.Adam(model.parameters(),lr=lrate, weight_decay=lamda) # weight_decay=0.0005
         model = model.to(device)
-        model.eval()
         print('Repeat No.: ',repeat+1)
         print('##############################')
         print('##############################')
         time_start = time.time()
         for T in range(0,5):
             
+            model.eval()
             max_auc = 0.01
             max_loss = 30000
-            EpochSize = 4000
-            zpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\z_d_'+str(d)+'_drug_feature_target'+str(repeat)+'_'+str(T)+'.csv'
+            EpochSize = 3000
+            #if(T==0):
+            #    EpochSize=6000
+            #else:
+            #    EpochSize=5000
+            zpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\z_d_'+str(d)+'_drug_feature_target'+'_'+str(T)+'.csv'
+            lasttrainpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\lta_'+str(T)+'.csv'
+            lasttestpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\lte_'+str(T)+'.csv'
+            outpath = 'D:\\StudyTools\\GraphModels\\zzzzz\\O_'+str(T)+'.csv'
             modelpath = 'D:\\StudyTools\\GraphModels\\temp1\\modelall'+str(T)+'.pth'
             
             sampleN_test = sampleT[:,T]
@@ -427,10 +437,6 @@ for RRRRR in range(0,1):
             adj2[inptrain[0,:],inptrain[1,:]]=0
             adj[inptest[0,:],inptest[1,:]]=0
             adj2[inptest[0,:],inptest[1,:]]=0
-            if(T==0):
-                EpochSize=4000
-            else:
-                EpochSize=1000
             
             loss_train_history = np.ones([EpochSize,])*100
             loss_test_history = np.ones([EpochSize,])*100
@@ -456,8 +462,13 @@ for RRRRR in range(0,1):
             print('T=',T)
             print('aucroc: ',max_auc)
             model_loaded = model.load_state_dict(torch.load(modelpath))
-            output, codelayer = model(DDx, adj, adj2, inptest)
+            output, codelayer, lastTE = model(DDx, adj, adj2, inptrain)
+            np.savetxt(lasttestpath,lastTE,delimiter=",")
+            output, codelayer, last2 = model(DDx, adj, adj2, inptest)
             zz=codelayer.detach().to('cpu').numpy()
+            last = last2.detach().to('cpu').numpy()
+            np.savetxt(lasttrainpath,last,delimiter=",")
+            np.savetxt(outpath,output,delimiter=",")
             #np.savetxt(zpath,zz,delimiter=",")
             if(T==0):
                 label_p = output
@@ -487,8 +498,5 @@ for RRRRR in range(0,1):
     inter_auc1 = np.array(inter_auc).reshape((len(inter_auc),1))
     inter_pr1 = np.array(inter_pr).reshape((len(inter_pr),1))
     inter = np.concatenate([inter_auc1,inter_pr1],axis=1)
-    np.savetxt('D:\\StudyTools\\GraphModels\\zzzzz\\'+model_file_str[mstr]+'_lamda'+str(lamda)+'_dim'+str(d)+'_drop'+str(drop)+'.csv',np.array(inter),delimiter=",")
+    np.savetxt('D:\\StudyTools\\GraphModels\\zzzzz\\'+model_file_str[mstr]+'_lr'+str(lrate)+'_lamda'+str(lamda)+'_d'+str(d)+'.csv',np.array(inter),delimiter=",")
 print('END')
-
-
-
