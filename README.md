@@ -1,4 +1,7 @@
 # GCNMK
+
+Fei Wang, Xiujuan Lei, Bo Liao, Fang-Xiang Wu. Predicting drug-drug interactions by graph convolutional network with multi-kernel, Briefings in Bioinformatics, 2021. DOI: 10.1093/bib/bbab511
+
 All codes are in the same file. It works, but maybe not easy to read.
 
 In the future, I will seperate them into individual modules. Also, the file path need to be adjusted.
