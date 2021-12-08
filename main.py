@@ -201,9 +201,9 @@ def reset_parameters(w):
     stdv = 1. / math.sqrt(w.size(0))
     w.data.uniform_(-stdv, stdv)
 
-class IDGCN(nn.Module):
+class GCNMK(nn.Module):
     def __init__(self, nfeat, nhid1, nhid2, nhid_decode1, nhid_decode2, dropout):
-        super(IDGCN, self).__init__()
+        super(GCNMK, self).__init__()
         
         # Increase
         self.i_gc1 = GraphConvolution(nfeat, nhid1)
@@ -252,7 +252,7 @@ class IDGCN(nn.Module):
         o = torch.sigmoid(self.decoder3(oo))
         return o, x, oo
 '''
-model = IDGCN(nfeat=Nfeature,nhid1=Hdim1,nhid2=d,nhid_decode1 = Hdim3,nhid_decode2=Hdim4, dropout=drop)
+model = GCNMK(nfeat=Nfeature,nhid1=Hdim1,nhid2=d,nhid_decode1 = Hdim3,nhid_decode2=Hdim4, dropout=drop)
 optimizer = torch.optim.Adam(model.parameters(),lr=0.001, weight_decay=0.0005)
 model = model.to(device)
 model.eval()
