@@ -10,6 +10,7 @@ In order to reduce the file size, the drug associated target file is in .txt doc
 
 Package Version:
 
+Python: 3.7.10; 
 Numpy: 1.20.1; 
 Scikit-learn: 0.24.2; 
 Torch: 1.7.1; 
