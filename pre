@@ -32,9 +32,6 @@ from pubchempy import *
 c = Compound.from_cid(71158)
 c1 = c.cactvs_fingerprint
 
-#m1 = indigo.loadMolecule(mydrug[0][2])
-#fp1 = m1.fingerprint("sub")
-#c2 = fp1.toString()
 cfin = list()
 for i in range(0,ndrug):
     c = Compound.from_cid(int(cid[i,0]))
