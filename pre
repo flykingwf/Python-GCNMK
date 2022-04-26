@@ -1,0 +1,47 @@
+# from SMILES to 881-dimensional fingerprint vector
+
+# pip install pubchempy
+import numpy as np
+mydrug=list()
+with open('D:\\Datasets\\drugbank\\chemical613_CID_SMILE.txt','r') as f:
+	for line in f:
+		mydrug.append(list(line.strip('\n').split('    ')))
+print(len(mydrug))
+ndrug = len(mydrug)
+cid = np.zeros([ndrug,1])
+for i in range(0,ndrug):
+    cid[i] = int(mydrug[i][1])
+drugname = list()
+for i in range(0,ndrug):
+    drugname.append(mydrug[i][0])
+
+smile=list()
+for i in range(0,ndrug):
+    smile.append(mydrug[i][2])
+fileobject = open('D:\\Datasets\\drugbank\\chemical613_SMILE.txt','w')
+for ip in smile:
+    fileobject.write(ip)
+    fileobject.write('\n')
+fileobject.close()
+
+cid = np.zeros([ndrug,1])
+for i in range(0,ndrug):
+    cid[i] = int(mydrug[i][1])
+
+from pubchempy import *
+c = Compound.from_cid(71158)
+c1 = c.cactvs_fingerprint
+
+#m1 = indigo.loadMolecule(mydrug[0][2])
+#fp1 = m1.fingerprint("sub")
+#c2 = fp1.toString()
+cfin = list()
+for i in range(0,ndrug):
+    c = Compound.from_cid(int(cid[i,0]))
+    c1 = c.cactvs_fingerprint
+    cfin.append(c1)
+fileobject = open('D:\\Datasets\\DDI_DTI_datasets\\chemical613_881fingerprint.txt','w')
+for ip in cfin:
+    fileobject.write(ip)
+    fileobject.write('\n')
+fileobject.close()
